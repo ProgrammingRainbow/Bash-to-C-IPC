@@ -1,4 +1,5 @@
 #include <fcntl.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,26 +11,33 @@
 #include <time.h>
 #include <unistd.h>
 
-#define PIPE_TO_SERVER_PATH "/tmp/my_pipe_to_server"
-#define PIPE_FROM_SERVER_PATH "/tmp/my_pipe_from_server"
+#define PIPE_TO_SERVER_PATH "/tmp/ipc_pipe_to_server"
+#define PIPE_FROM_SERVER_PATH "/tmp/ipc_pipe_from_server"
 
-#define SOCKET_PATH "/tmp/my_socket"
+#define SOCKET_PATH "/tmp/ipc_socket"
 
-#define SHM_DATA_PATH "/dev/shm/my_shared_data"
-#define SHM_LOCK_PATH "/dev/shm/my_shared_lock"
+#define SHM_DATA_PATH "/dev/shm/ipc_shared_data"
+#define SHM_LOCK_PATH "/dev/shm/ipc_shared_lock"
 
-#define BUFFER_SIZE 64
+#define BUFFER_SIZE 1024
 
 typedef struct {
         FILE *in_stream;
         FILE *out_stream;
+        char buffer[BUFFER_SIZE];
 } PipeServer;
+
+typedef struct {
+        char buffer[BUFFER_SIZE];
+} StdinoutServer;
 
 typedef struct {
         int fd_server;
         int fd_client;
         FILE *stream;
         struct sockaddr_un addr;
+        bool reconnect;
+        char buffer[BUFFER_SIZE];
 } SocketServer;
 
 typedef struct {
@@ -37,14 +45,17 @@ typedef struct {
         int fd_shm_lock;
         volatile char *shm_data;
         volatile char *shm_lock;
+        char buffer[BUFFER_SIZE];
 } SharedServer;
 
 void pipe_server_free(PipeServer *p);
-bool pipe_server_run(void);
+bool pipe_server_run(pid_t script_pid);
+void stdinout_server_free(StdinoutServer *s);
+bool stdinout_server_run(pid_t script_pid);
 void socket_server_free(SocketServer *s);
-bool socket_server_run(void);
+bool socket_server_run(pid_t script_pid);
 void shared_server_free(SharedServer *s);
-bool shared_server_run(void);
+bool shared_server_run(pid_t script_pid);
 
 void pipe_server_free(PipeServer *p) {
     if (p) {
@@ -64,11 +75,16 @@ void pipe_server_free(PipeServer *p) {
         unlink(PIPE_TO_SERVER_PATH);
         unlink(PIPE_FROM_SERVER_PATH);
 
+        // Clearing the buffer.
+        memset(p->buffer, 0, BUFFER_SIZE);
+
         printf("[SERVER] Pipe Server Shutdown.\n");
     }
 }
 
-bool pipe_server_run(void) {
+bool pipe_server_run(pid_t script_pid) {
+    printf("[SERVER] Starting Pipe Server.\n");
+
     PipeServer p = {0};
 
     // Create named pipe for input.
@@ -85,7 +101,7 @@ bool pipe_server_run(void) {
     // Create named pipe for output.
     mkfifo(PIPE_FROM_SERVER_PATH, 0666);
 
-    // Open output pipe for writing.
+    // Open output pipe for reading.
     p.out_stream = fopen(PIPE_FROM_SERVER_PATH, "w");
     if (p.out_stream == NULL) {
         perror("[SERVER] Error: Opening Named Pipe out_stream.");
@@ -93,25 +109,96 @@ bool pipe_server_run(void) {
         return false;
     }
 
-    int value = 0;
-    char buffer[BUFFER_SIZE] = {0};
+    printf("[SERVER] Listening on pipe.\n");
+    while (fgets(p.buffer, BUFFER_SIZE, p.in_stream)) {
+        // if the buffer has a new line character terminate it.
+        size_t len = strlen(p.buffer);
+        if (len > 0 && p.buffer[len - 1] == '\n') {
+            p.buffer[len - 1] = '\0';
+        }
 
-    printf("[SERVER] Pipe server running...\n");
-    // While pipe is open get a line and place it in buffer.
-    while (fgets(buffer, BUFFER_SIZE, p.in_stream)) {
-        // convert string in buffer to int.
-        value = atoi(buffer);
-        if (value == -2) {
+        // Tokenize the buffer based on spaces.
+        char *action = strtok(p.buffer, " ");
+        char *value = strtok(NULL, " ");
+
+        if (!strcmp(action, "quit")) {
             break;
         } else {
-            // Write the integer value to the output pipe.
-            fprintf(p.out_stream, "%i\n", value);
-            // Flush to ensure immediate delivery.
-            fflush(p.out_stream);
+            // if the command starts with get.
+            if (!strcmp(action, "get")) {
+                // Write value to the output pipe.
+                fprintf(p.out_stream, "%s\n", value);
+                // Flush to ensure immediate delivery.
+                fflush(p.out_stream);
+            }
+
+            // Clear the buffer.
+            memset(p.buffer, 0, BUFFER_SIZE);
         }
     }
 
     pipe_server_free(&p);
+
+    // Send a signal back to the script to shutdown.
+    if (kill(script_pid, 0) == 0) {
+        kill(script_pid, SIGUSR1);
+    }
+
+    return true;
+}
+
+void stdinout_server_free(StdinoutServer *s) {
+    if (s) {
+        // Clearing the buffer.
+        memset(s->buffer, 0, BUFFER_SIZE);
+
+        // Use standard error for messages.
+        fprintf(stderr, "[SERVER] Stdinout Server Shutdown.\n");
+    }
+}
+
+bool stdinout_server_run(pid_t script_pid) {
+    // Use standard error for messages.
+    fprintf(stderr, "[SERVER] Starting Stdinout Server.\n");
+
+    StdinoutServer s = {0};
+
+    fprintf(stderr, "[SERVER] Listening on standard in.\n");
+    // Read from stdin line by line.
+    while (fgets(s.buffer, BUFFER_SIZE, stdin)) {
+        // if the buffer has a new line character terminate it.
+        size_t len = strlen(s.buffer);
+        if (len > 0 && s.buffer[len - 1] == '\n') {
+            s.buffer[len - 1] = '\0';
+        }
+
+        // Tokenize the buffer based on spaces.
+        char *action = strtok(s.buffer, " ");
+        char *value = strtok(NULL, " ");
+
+        if (!strcmp(action, "quit")) {
+            break;
+        } else {
+            // if the command starts with get.
+            if (!strcmp(action, "get")) {
+                // Write value to the output pipe.
+                fprintf(stdout, "%s\n", value);
+                // Flush to ensure immediate delivery.
+                fflush(stdout);
+            }
+
+            // Clear the buffer.
+            memset(s.buffer, 0, BUFFER_SIZE);
+        }
+    }
+
+    stdinout_server_free(&s);
+
+    // Send a signal back to the script to shutdown.
+    if (kill(script_pid, 0) == 0) {
+        kill(script_pid, SIGUSR1);
+    }
+
     return true;
 }
 
@@ -142,12 +229,18 @@ void socket_server_free(SocketServer *s) {
         // Clear the socket address structure
         memset(&s->addr, 0, sizeof(s->addr));
 
+        // Clearing the buffer.
+        memset(s->buffer, 0, BUFFER_SIZE);
+
         printf("[SERVER] Socket Server Shutdown.\n");
     }
 }
 
-bool socket_server_run(void) {
+bool socket_server_run(pid_t script_pid) {
+    printf("[SERVER] Starting Socket Server.\n");
+
     SocketServer s = {0};
+    s.reconnect = true;
 
     // Remove any existing socket file.
     unlink(SOCKET_PATH);
@@ -180,12 +273,8 @@ bool socket_server_run(void) {
         return false;
     }
 
-    int value = 0;
-    char buffer[BUFFER_SIZE] = {0};
-    bool running = true;
-
-    printf("[SERVER] Socket server running...\n");
-    while (running) {
+    printf("[SERVER] Waiting for connection.\n");
+    while (s.reconnect) {
         // Accept a new client connection on the server socket.
         s.fd_client = accept(s.fd_server, NULL, NULL);
         if (s.fd_client == -1) {
@@ -201,23 +290,44 @@ bool socket_server_run(void) {
             continue;
         }
 
+        printf("[SERVER] Listening on socket.\n");
         // While socket is open get a line and place it in buffer.
-        while (fgets(buffer, BUFFER_SIZE, s.stream)) {
-            // convert string in buffer to int.
-            value = atoi(buffer);
-            if (value == -2) {
-                running = false;
+        while (fgets(s.buffer, BUFFER_SIZE, s.stream)) {
+            // if the buffer has a new line character terminate it.
+            size_t len = strlen(s.buffer);
+            if (len > 0 && s.buffer[len - 1] == '\n') {
+                s.buffer[len - 1] = '\0';
+            }
+
+            // Tokenize the buffer based on spaces.
+            char *action = strtok(s.buffer, " ");
+            char *value = strtok(NULL, " ");
+
+            if (!strcmp(action, "quit")) {
+                s.reconnect = false;
                 break;
             } else {
-                // Write the integer value to the stream.
-                fprintf(s.stream, "%i\n", value);
-                // Flush to ensure immediate delivery.
-                fflush(s.stream);
+                // if the command starts with get.
+                if (!strcmp(action, "get")) {
+                    // Write value to the stream.
+                    fprintf(s.stream, "%s\n", value);
+                    // Flush to ensure immediate delivery.
+                    fflush(s.stream);
+                }
+
+                // Clear the buffer.
+                memset(s.buffer, 0, BUFFER_SIZE);
             }
         }
     }
 
     socket_server_free(&s);
+
+    // Send a signal back to the script to shutdown.
+    if (kill(script_pid, 0) == 0) {
+        kill(script_pid, SIGUSR1);
+    }
+
     return true;
 }
 
@@ -251,11 +361,16 @@ void shared_server_free(SharedServer *s) {
         unlink(SHM_DATA_PATH);
         unlink(SHM_LOCK_PATH);
 
+        // Clearing the buffer.
+        memset(s->buffer, 0, BUFFER_SIZE);
+
         printf("[SERVER] Shared Server Shutdown.\n");
     }
 }
 
-bool shared_server_run(void) {
+bool shared_server_run(pid_t script_pid) {
+    printf("[SERVER] Starting Shared Server.\n");
+
     SharedServer s = {0};
 
     // Open the shared memory data file for reading and writing.
@@ -310,49 +425,75 @@ bool shared_server_run(void) {
     memset((void *)s.shm_data, 0, BUFFER_SIZE);
     memset((void *)s.shm_lock, 0, BUFFER_SIZE);
 
-    int value = 0;
     struct timespec ts = {0, 1000};
 
-    printf("[SERVER] Shared server running...\n");
+    printf("[SERVER] Waiting for shared data.\n");
     while (true) {
         // Check the first char of the shared memory lock.
         // 0 client can write, 1 server can read/write,
         // 2 client can read, and 3 server shut down.
         if (s.shm_lock[0] == 1) {
-            // Convert shared memory data to int.
-            value = atoi((char *)s.shm_data);
-            // Write the int back to shared memory data as a string.
-            snprintf((char *)s.shm_data, BUFFER_SIZE, "%d", value);
-            s.shm_lock[0] = 2;
-        } else if (s.shm_lock[0] == 3) {
-            break;
-        }
+            memcpy(s.buffer, (char *)s.shm_data, BUFFER_SIZE);
+            // Tokenize the buffer based on spaces.
+            char *action = strtok(s.buffer, " ");
+            char *value = strtok(NULL, " ");
 
+            if (!strcmp(action, "quit")) {
+                break;
+            } else {
+                // if the command starts with get.
+                if (!strcmp(action, "get")) {
+                    // Write the buffer to shared memory data.
+                    snprintf((char *)s.shm_data, BUFFER_SIZE, "%s\n", value);
+
+                    // set lock to 2 for return data.
+                    s.shm_lock[0] = 2;
+
+                } else {
+                    // set lock to 0 when no return data.
+                    s.shm_lock[0] = 0;
+                }
+
+                // Clear the buffer.
+                memset(s.buffer, 0, BUFFER_SIZE);
+            }
+        }
         // Sleep briefly to reduce CPU usage.
         nanosleep(&ts, NULL);
     }
 
     shared_server_free(&s);
 
+    // Send a signal back to the script to shutdown.
+    if (kill(script_pid, 0) == 0) {
+        kill(script_pid, SIGUSR1);
+    }
+
     return true;
 }
 
 int main(int argc, char *argv[]) {
-    if (argc != 2) {
+    if (argc != 3) {
         fprintf(stderr, "Error: %s requires an argument.\n", argv[0]);
         return EXIT_FAILURE;
     }
 
+    pid_t script_pid = (pid_t)atoi(argv[2]);
+
     if (strcmp(argv[1], "--pipe") == 0) {
-        if (!pipe_server_run()) {
+        if (!pipe_server_run(script_pid)) {
+            return EXIT_FAILURE;
+        }
+    } else if (strcmp(argv[1], "--stdinout") == 0) {
+        if (!stdinout_server_run(script_pid)) {
             return EXIT_FAILURE;
         }
     } else if (strcmp(argv[1], "--socket") == 0) {
-        if (!socket_server_run()) {
+        if (!socket_server_run(script_pid)) {
             return EXIT_FAILURE;
         }
     } else if (strcmp(argv[1], "--shared") == 0) {
-        if (!shared_server_run()) {
+        if (!shared_server_run(script_pid)) {
             return EXIT_FAILURE;
         }
     } else {

@@ -15,7 +15,6 @@ else
 fi
 
 SERVER="ipc-server"
-SOCKET_PATH="/tmp/ipc_socket"
 SHUTDOWN_SERVER=1
 
 # Make sure the server is compiled.
@@ -24,34 +23,21 @@ if [ ! -e "$SERVER" ]; then
     exit 1
 fi
 
-# Start the server in socket mode with the script PID.
-./"$SERVER" --socket $$ &
-DAEMON_PID=$!
-
-# Make sure the server started and wait for the socket.
-while [ ! -e "$SOCKET_PATH" ]; do
-    if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
-        echo "[CLIENT] Server failed to start. Exiting."
-        exit 1
-    fi
-    sleep 0.1
-done
-
-# Open bidirectional socket connection to server using socat coprocess.
+# Start the server in a coprocess using --stdin mode.
 if [ "$IPC_SHELL" -eq 1 ]; then
-    # Zsh assigns the coprocess file descriptor to $COPROC
-    coproc { socat - UNIX-CONNECT:"$SOCKET_PATH"; }
-    # Write to socket.
+    # Zsh assigns the coprocess file descriptor to $SERVER_PROC
+    coproc { ./"$SERVER" --stdinout $$; }
+    # Write to server's stdin
     exec 3>&p
-    # Read from socket.
+    # Read from server's stdout
     exec 4<&p
 else
     # Bash version.
-    eval 'coproc SOCKET { socat - UNIX-CONNECT:"$SOCKET_PATH"; }'
-    # Write to socket.
-    exec 3>&"${SOCKET[1]}"
-    # Read from socket.
-    exec 4<&"${SOCKET[0]}" 
+    eval 'coproc SERVER_PROC { ./"$SERVER" --stdinout $$; }'
+    # Write to server's stdin
+    exec 3>&"${SERVER_PROC[1]}"
+    # Read from server's stdout
+    exec 4<&"${SERVER_PROC[0]}"
 fi
 
 ipc_quit() {
@@ -62,25 +48,21 @@ ipc_quit() {
         ipc_cmd "quit"
     fi
 
-    # Close the socket file descriptors.
+    # Close file descriptors.
     exec 3>&- 2>/dev/null
     exec 4<&- 2>/dev/null
-
-    # Remove named socket from the filesystem.
-    rm "$SOCKET_PATH" 2>/dev/null
 
     exit "$1"
 }
 
 # If the server initiated shutdown don't shut down recursively.
-trap 'SHUTDOWN_SERVER=0; ipc_quit 1' SIGUSR2
 trap 'SHUTDOWN_SERVER=0; ipc_quit 0' SIGUSR1
 trap 'ipc_quit 0' SIGINT SIGTERM SIGQUIT EXIT
 
 ipc_cmd() {
-    # Send argument 1 to socket.
+    # Send argument 1 to stdin.
     echo "$1" >&3 || ipc_quit 1
 
-    # If cmd starts with get read socket to global variable reply (Blocking).
+    # If cmd starts with get read stdin to global variable reply (Blocking).
     [[ $1 == get* ]] && read -r -u 4 reply
 }

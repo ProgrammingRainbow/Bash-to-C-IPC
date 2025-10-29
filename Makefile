@@ -1,5 +1,5 @@
-CLIENT			= client
-SERVER			= server
+CLIENT			= ipc-client
+SERVER			= ipc-server
 CC				?= gcc
 
 CFLAGS_BASE		= -std=gnu11

@@ -7,10 +7,10 @@
 #include <time.h>
 #include <unistd.h>
 
-#define SHM_DATA_PATH "/dev/shm/my_shared_data"
-#define SHM_LOCK_PATH "/dev/shm/my_shared_lock"
+#define SHM_DATA_PATH "/dev/shm/ipc_shared_data"
+#define SHM_LOCK_PATH "/dev/shm/ipc_shared_lock"
 
-#define BUFFER_SIZE 64
+#define BUFFER_SIZE 1024
 
 typedef struct {
         int fd_shm_data;
@@ -88,7 +88,7 @@ bool shared_client_run(const char *str) {
     }
 
     // The client only sends/receices once, nanosleep is not needed.
-    // struct timespec ts = {0, 1000};
+    struct timespec ts = {0, 1000};
 
     // Shared memory lock uses the first char only.
     // 0 client can write, 1 server can read/write,
@@ -98,24 +98,37 @@ bool shared_client_run(const char *str) {
     if (!strcmp(str, "shutdown")) {
         s.shm_lock[0] = 3;
     } else {
+        int count = 0;
         while (true) {
             if (s.shm_lock[0] == 0) {
                 // Use snprintf or memcopy to send str to shared memory data.
-                // snprintf((char *)s.shm_data, BUFFER_SIZE, "%s", str);
-                memcpy((char *)s.shm_data, str, strlen(str) + 1);
+                snprintf((char *)s.shm_data, BUFFER_SIZE, "%s", str);
+                // memcpy((char *)s.shm_data, str, strlen(str) + 1);
                 s.shm_lock[0] = 1;
                 while (true) {
-                    if (s.shm_lock[0] == 2) {
+                    if (s.shm_lock[0] == 0) {
+                        break;
+                    } else if (s.shm_lock[0] == 2) {
                         // printf("%s\n", (char *)s.shm_data);
                         puts((char *)s.shm_data);
                         s.shm_lock[0] = 0;
                         break;
                     }
-                    // nanosleep(&ts, NULL);
+                    count++;
+                    if (count > 10000) {
+                        shared_client_free(&s);
+                        return true;
+                    }
+                    nanosleep(&ts, NULL);
                 }
                 break;
             }
-            // nanosleep(&ts, NULL);
+            count++;
+            if (count > 10000) {
+                shared_client_free(&s);
+                return true;
+            }
+            nanosleep(&ts, NULL);
         }
     }
 
