@@ -1,7 +1,9 @@
 # Bash-to-C-IPC
 Bash to C Inter-Process Communication. Unix Named Pipes, Standard in and out, Unix Sockets, direct Shared Memory, and Shared Memory using client.
 
-There is 5 options. A Unix Named pipe seems to be the best option. There is also an option to communicate to the server using the servers standard in and out(not recommened). A Unix socket. Shared memory mapped directly from bash and the server. A small client that spins up and connects to the server using shared memory. This is about 149 times slower than the fastest method. This is Copilots recomends fastest possible method. The test sends data to the server one way without reply. Then it sends another data that does require a reply and checks this. It loops this 1 millions times.
+There is 5 options. A Unix Named pipe seems to be the best option. There is also an option to communicate to the server using the servers standard in and out(not recommened). A Unix socket. Shared memory mapped directly from bash and the server. A small client that spins up and connects to the server using shared memory. This is about 149 times slower than the fastest method. This is Copilots recomends fastest possible method.
+
+The test sends data to the server one way without reply. Then it sends another data that does require a reply and checks this. It loops this 1 millions times.
 
 # MacOS & Zsh
 The scripts run by default as bash. but if called using zsh they will run in that mode. On MacOS the shared and client will not work since they use shared memory.
